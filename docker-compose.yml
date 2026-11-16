@@ -1,0 +1,132 @@
+services:
+  # ---------- Application stack ----------
+  db01:
+    image: mariadb:10.11
+    container_name: db01
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-admin123}
+      MARIADB_DATABASE: accounts
+      MARIADB_USER: ${DB_USER:-admin}
+      MARIADB_PASSWORD: ${DB_PASSWORD:-admin123}
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./db01/db_backup.sql:/docker-entrypoint-initdb.d/db_backup.sql:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+
+  mc01:
+    image: memcached:1.6
+    container_name: mc01
+    restart: unless-stopped
+    networks: [backend]
+
+  rmq01:
+    image: rabbitmq:3-management
+    container_name: rmq01
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-test}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-test}
+    ports:
+      - "15672:15672"
+    networks: [backend]
+
+  app01:
+    build: ./app01
+    container_name: app01
+    restart: unless-stopped
+    depends_on:
+      db01:
+        condition: service_healthy
+      mc01:
+        condition: service_started
+      rmq01:
+        condition: service_started
+    networks: [backend]
+
+  web01:
+    build: ./web01
+    container_name: web01
+    restart: unless-stopped
+    depends_on:
+      - app01
+    ports:
+      - "80:80"
+    networks: [backend]
+
+  # ---------- Monitoring ----------
+  nagios:
+    image: jasonrivers/nagios:latest
+    container_name: nagios
+    restart: unless-stopped
+    environment:
+      NAGIOSADMIN_USER: ${NAGIOS_USER:-nagiosadmin}
+      NAGIOSADMIN_PASS: ${NAGIOS_PASSWORD:-nagios}
+    ports:
+      - "8081:80"
+    volumes:
+      - nagios_etc:/opt/nagios/etc
+      - nagios_var:/opt/nagios/var
+    networks: [backend]
+
+  zabbix-db:
+    image: mysql:8.4
+    container_name: zabbix-db
+    restart: unless-stopped
+    command: ["mysqld", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_bin"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${ZABBIX_DB_ROOT_PASSWORD:-rootpass}
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ${ZABBIX_DB_PASSWORD:-zabbixpass}
+    volumes:
+      - zabbix_db:/var/lib/mysql
+    networks: [monitoring]
+
+  zabbix:
+    image: zabbix/zabbix-server-mysql:ubuntu-latest
+    container_name: zabbix
+    restart: unless-stopped
+    depends_on:
+      - zabbix-db
+    environment:
+      DB_SERVER_HOST: zabbix-db
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ${ZABBIX_DB_PASSWORD:-zabbixpass}
+    ports:
+      - "10051:10051"
+    networks: [monitoring, backend]
+
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-mysql:ubuntu-latest
+    container_name: zabbix-web
+    restart: unless-stopped
+    depends_on:
+      - zabbix
+      - zabbix-db
+    environment:
+      ZBX_SERVER_HOST: zabbix
+      DB_SERVER_HOST: zabbix-db
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: ${ZABBIX_DB_PASSWORD:-zabbixpass}
+      PHP_TZ: Africa/Cairo
+    ports:
+      - "8082:8080"
+    networks: [monitoring]
+
+networks:
+  backend:
+  monitoring:
+
+volumes:
+  db_data:
+  nagios_etc:
+  nagios_var:
+  zabbix_db:
